@@ -1,4 +1,4 @@
-import { TypedDataDomain } from "./types/ethers";
+import type { TypedDataDomain } from "./types/core";
 
 /**
  * Return the Gnosis Protocol v2 domain used for signing.
@@ -27,4 +27,4 @@ export * from "./settlement";
 export * from "./sign";
 export * from "./swap";
 export * from "./vault";
-export * from "./types/ethers";
+export * from "./types/core";

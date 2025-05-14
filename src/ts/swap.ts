@@ -1,9 +1,10 @@
-import { BigNumberish, BytesLike, Signer } from "ethers";
-
-import { Order, OrderKind } from "./order";
-import { TokenRegistry, Trade, encodeTrade } from "./settlement";
-import { EcdsaSigningScheme, Signature, signOrder } from "./sign";
-import { TypedDataDomain } from "./types/ethers";
+import type { EthereumClientAdapter } from "./adapters/ethereum-client-adapter";
+import { SettlementEncoder, TokenRegistry } from "./settlement";
+import type { EcdsaSigningScheme, Signature } from "./sign";
+import type { TypedDataDomain } from "./types/core";
+import { type Order, OrderKind } from "./types/order";
+import type { Trade } from "./types/settlement";
+import type { SignerContext } from "./types/signing";
 
 /**
  * A Balancer swap used for settling a single order against Balancer pools.
@@ -12,7 +13,7 @@ export interface Swap {
   /**
    * The ID of the pool for the swap.
    */
-  poolId: BytesLike;
+  poolId: string;
   /**
    * The swap input token address.
    */
@@ -25,14 +26,14 @@ export interface Swap {
    * The amount to swap. This will ether be a fixed input amount when swapping
    * a sell order, or a fixed output amount when swapping a buy order.
    */
-  amount: BigNumberish;
+  amount: bigint | string;
   /**
    * Optional additional pool user data required for the swap.
    *
    * This additional user data is pool implementation specific, and allows pools
    * to extend the Vault pool interface.
    */
-  userData?: BytesLike;
+  userData?: string;
 }
 
 /**
@@ -43,7 +44,7 @@ export interface BatchSwapStep {
   /**
    * The ID of the pool for the swap.
    */
-  poolId: BytesLike;
+  poolId: string;
   /**
    * The index of the input token.
    *
@@ -58,11 +59,11 @@ export interface BatchSwapStep {
   /**
    * The amount to swap.
    */
-  amount: BigNumberish;
+  amount: bigint | string;
   /**
    * Additional pool user data required for the swap.
    */
-  userData: BytesLike;
+  userData: string;
 }
 
 /**
@@ -75,7 +76,7 @@ export interface SwapExecution {
    * This allows settlement submission to define a tighter slippage than what
    * was specified by the order in order to reduce MEV opportunity.
    */
-  limitAmount: BigNumberish;
+  limitAmount: bigint | string;
 }
 
 /**
@@ -122,17 +123,18 @@ export class SwapEncoder {
   /**
    * Creates a new settlement encoder instance.
    *
-   * @param domain Domain used for signing orders. See {@link signOrder} for
-   * more details.
+   * @param domain Domain used for signing orders.
+   * @param adapter The blockchain adapter to use
    */
-  public constructor(public readonly domain: TypedDataDomain) {}
+  public constructor(
+    public readonly domain: TypedDataDomain,
+    private readonly adapter: EthereumClientAdapter,
+  ) {}
 
   /**
    * Gets the array of token addresses used by the currently encoded swaps.
    */
   public get tokens(): string[] {
-    // NOTE: Make sure to slice the original array, so it cannot be modified
-    // outside of this class.
     return this._tokens.addresses;
   }
 
@@ -181,30 +183,41 @@ export class SwapEncoder {
   ): void {
     const { limitAmount } = {
       limitAmount:
-        order.kind == OrderKind.SELL ? order.buyAmount : order.sellAmount,
+        order.kind === OrderKind.SELL ? order.buyAmount : order.sellAmount,
       ...swapExecution,
     };
 
-    this._trade = encodeTrade(this._tokens, order, signature, {
+    // Create a settlement encoder with our domain and adapter
+    const settlementEncoder = new SettlementEncoder(this.domain, this.adapter);
+
+    // Encode the trade
+    settlementEncoder.encodeTrade(order, signature, {
       executedAmount: limitAmount,
     });
+
+    // Get the encoded trade (this will be the first trade in the encoder)
+    this._trade = settlementEncoder.trades[0];
   }
 
   /**
    * Signs an order and encodes a trade with that order.
    *
    * @param order The order to sign for the trade.
-   * @param owner The externally owned account that should sign the order.
-   * @param scheme The signing scheme to use. See {@link SigningScheme} for more
-   * details.
+   * @param signer The signer to use for signing the order.
+   * @param scheme The signing scheme to use.
+   * @param swapExecution Optional swap execution parameters.
    */
   public async signEncodeTrade(
     order: Order,
-    owner: Signer,
+    signer: SignerContext,
     scheme: EcdsaSigningScheme,
     swapExecution?: Partial<SwapExecution>,
   ): Promise<void> {
-    const signature = await signOrder(this.domain, order, owner, scheme);
+    if (!this.adapter) {
+      throw new Error("Adapter must be provided for signing operations");
+    }
+
+    const signature = await this.adapter.signOrder(this.domain, order, signer);
     this.encodeTrade(order, signature, swapExecution);
   }
 
@@ -217,6 +230,7 @@ export class SwapEncoder {
     return [this.swaps, this.tokens, this.trade];
   }
 
+  // Static method overloads that match your original structure
   public static encodeSwap(
     swaps: Swap[],
     order: Order,
@@ -228,19 +242,20 @@ export class SwapEncoder {
     signature: Signature,
     swapExecution: Partial<SwapExecution> | undefined,
   ): EncodedSwap;
-
   public static encodeSwap(
+    adapter: EthereumClientAdapter,
     domain: TypedDataDomain,
     swaps: Swap[],
     order: Order,
-    owner: Signer,
+    signer: SignerContext,
     scheme: EcdsaSigningScheme,
   ): Promise<EncodedSwap>;
   public static encodeSwap(
+    adapter: EthereumClientAdapter,
     domain: TypedDataDomain,
     swaps: Swap[],
     order: Order,
-    owner: Signer,
+    signer: SignerContext,
     scheme: EcdsaSigningScheme,
     swapExecution: Partial<SwapExecution> | undefined,
   ): Promise<EncodedSwap>;
@@ -256,44 +271,55 @@ export class SwapEncoder {
     ...args:
       | [Swap[], Order, Signature]
       | [Swap[], Order, Signature, Partial<SwapExecution> | undefined]
-      | [TypedDataDomain, Swap[], Order, Signer, EcdsaSigningScheme]
       | [
+          EthereumClientAdapter,
           TypedDataDomain,
           Swap[],
           Order,
-          Signer,
+          SignerContext,
+          EcdsaSigningScheme,
+        ]
+      | [
+          EthereumClientAdapter,
+          TypedDataDomain,
+          Swap[],
+          Order,
+          SignerContext,
           EcdsaSigningScheme,
           Partial<SwapExecution> | undefined,
         ]
   ): EncodedSwap | Promise<EncodedSwap> {
-    if (args.length < 5) {
-      const [swaps, order, signature, swapExecution] = args as unknown as [
+    // Case 1: [swaps, order, signature, ?swapExecution]
+    if (!args[0] || typeof args[0] !== "object" || "poolId" in args[0]) {
+      const [swaps, order, signature, swapExecution] = args as [
         Swap[],
         Order,
         Signature,
         Partial<SwapExecution> | undefined,
       ];
 
-      const encoder = new SwapEncoder({});
+      const encoder = new SwapEncoder({} as TypedDataDomain);
       encoder.encodeSwapStep(...swaps);
       encoder.encodeTrade(order, signature, swapExecution);
       return encoder.encodedSwap();
-    } else {
-      const [domain, swaps, order, owner, scheme, swapExecution] =
-        args as unknown as [
-          TypedDataDomain,
-          Swap[],
-          Order,
-          Signer,
-          EcdsaSigningScheme,
-          Partial<SwapExecution> | undefined,
-        ];
-
-      const encoder = new SwapEncoder(domain);
-      encoder.encodeSwapStep(...swaps);
-      return encoder
-        .signEncodeTrade(order, owner, scheme, swapExecution)
-        .then(() => encoder.encodedSwap());
     }
+
+    // Case 2: [adapter, domain, swaps, order, signer, scheme, ?swapExecution]
+    const [adapter, domain, swaps, order, signer, scheme, swapExecution] =
+      args as [
+        EthereumClientAdapter,
+        TypedDataDomain,
+        Swap[],
+        Order,
+        SignerContext,
+        EcdsaSigningScheme,
+        Partial<SwapExecution> | undefined,
+      ];
+
+    const encoder = new SwapEncoder(domain, adapter);
+    encoder.encodeSwapStep(...swaps);
+    return encoder
+      .signEncodeTrade(order, signer, scheme, swapExecution)
+      .then(() => encoder.encodedSwap());
   }
 }
