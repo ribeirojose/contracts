@@ -1,17 +1,14 @@
-import { BytesLike, ethers, Signer } from "ethers";
+import { type BytesLike, type Signer, ethers } from "ethers";
 
+import { ORDER_TYPE_FIELDS } from "./constants";
+import { type Order, hashTypedData, normalizeOrder } from "./order";
 import {
-  ORDER_TYPE_FIELDS,
-  Order,
-  normalizeOrder,
-  hashTypedData,
-} from "./order";
-import {
-  TypedDataTypes,
-  SignatureLike,
+  type SignatureLike,
+  type TypedDataDomain,
+  type TypedDataTypes,
   isTypedDataSigner,
-  TypedDataDomain,
-} from "./types/ethers";
+} from "./types/core";
+import { SigningScheme } from "./types/signing";
 
 /**
  * Value returned by a call to `isValidSignature` if the signature was verified
@@ -23,34 +20,6 @@ export const EIP1271_MAGICVALUE = ethers.utils.hexDataSlice(
   0,
   4,
 );
-
-/**
- * The signing scheme used to sign the order.
- */
-export enum SigningScheme {
-  /**
-   * The EIP-712 typed data signing scheme. This is the preferred scheme as it
-   * provides more infomation to wallets performing the signature on the data
-   * being signed.
-   *
-   * <https://github.com/ethereum/EIPs/blob/master/EIPS/eip-712.md#definition-of-domainseparator>
-   */
-  EIP712 = 0b00,
-  /**
-   * Message signed using eth_sign RPC call.
-   */
-  ETHSIGN = 0b01,
-  /**
-   * Smart contract signatures as defined in EIP-1271.
-   *
-   * <https://eips.ethereum.org/EIPS/eip-1271>
-   */
-  EIP1271 = 0b10,
-  /**
-   * Pre-signed order.
-   */
-  PRESIGN = 0b11,
-}
 
 export type EcdsaSigningScheme = SigningScheme.EIP712 | SigningScheme.ETHSIGN;
 
